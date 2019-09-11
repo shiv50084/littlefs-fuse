@@ -17,6 +17,14 @@
 #include "lfs_util.h"
 #include "lfs_fuse_bd.h"
 
+#ifdef _MSC_VER
+#include <Windows.h>
+#include <fcntl.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <io.h>
+#endif
+
 #include <stdio.h>
 #include <inttypes.h>
 #include <stddef.h>
@@ -114,8 +122,8 @@ void lfs_fuse_destroy(void *eh) {
     lfs_fuse_bd_destroy(&config);
 }
 
-int lfs_fuse_statfs(const char *path, struct statvfs *s) {
-    memset(s, 0, sizeof(struct statvfs));
+int lfs_fuse_statfs(const char *path, struct fuse_statvfs *s) {
+    memset(s, 0, sizeof(struct fuse_statvfs));
 
     lfs_ssize_t in_use = lfs_fs_size(&lfs);
     if (in_use < 0) {
@@ -134,9 +142,10 @@ int lfs_fuse_statfs(const char *path, struct statvfs *s) {
 
 static void lfs_fuse_tostat(struct stat *s, struct lfs_info *info) {
     memset(s, 0, sizeof(struct stat));
-
     s->st_size = info->size;
-    s->st_mode = S_IRWXU | S_IRWXG | S_IRWXO;
+    //s->st_mode = _S_IREAD | _S_IWRITE | _S_IFDIR | _S_IFCHR | _S_IFREG;
+    //s->st_mode = _S_IREAD | _S_IWRITE;
+    s->st_mode = S_IREAD | S_IWRITE;
 
     switch (info->type) {
         case LFS_TYPE_DIR: s->st_mode |= S_IFDIR; break;
@@ -146,27 +155,43 @@ static void lfs_fuse_tostat(struct stat *s, struct lfs_info *info) {
 
 int lfs_fuse_getattr(const char *path, struct stat *s) {
     struct lfs_info info;
-    int err = lfs_stat(&lfs, path, &info);
-    if (err) {
-        return err;
-    }
+    printf("GETATTR: %s\n", path);
+    memset(s, 0, sizeof(struct stat));
 
-    lfs_fuse_tostat(s, &info);
+    if (strcmp(path, "/") == 0)
+    {
+        printf("ROOT: %s\n", path);
+        s->st_mode = S_IFDIR | S_IEXEC | S_IREAD | S_IWRITE | 0755;
+        s->st_nlink = 2;
+        s->st_size = 1024;
+    }
+    else
+    {
+        int err = lfs_stat(&lfs, path, &info);
+        if (err) {
+            return err;
+        }
+
+        lfs_fuse_tostat(s, &info);
+    }
     return 0;
 }
 
 int lfs_fuse_access(const char *path, int mask) {
     struct lfs_info info;
+    printf("ACCESS: %s\n", path);
     return lfs_stat(&lfs, path, &info);
 }
 
-int lfs_fuse_mkdir(const char *path, mode_t mode) {
+int lfs_fuse_mkdir(const char *path, fuse_mode_t mode) {
+    printf("MKDIR: %s\n", path);
     return lfs_mkdir(&lfs, path);
 }
 
 int lfs_fuse_opendir(const char *path, struct fuse_file_info *fi) {
     lfs_dir_t *dir = malloc(sizeof(lfs_dir_t));
     memset(dir, 0, sizeof(lfs_dir_t));
+    printf("%s: %s\n", __func__, path);
 
     int err = lfs_dir_open(&lfs, dir, path);
     if (err) {
@@ -187,12 +212,14 @@ int lfs_fuse_releasedir(const char *path, struct fuse_file_info *fi) {
 }
 
 int lfs_fuse_readdir(const char *path, void *buf,
-        fuse_fill_dir_t filler, off_t offset,
+        fuse_fill_dir_t filler, fuse_off_t offset,
         struct fuse_file_info *fi) {
     
     lfs_dir_t *dir = (lfs_dir_t*)fi->fh;
     struct stat s;
     struct lfs_info info;
+
+    printf("Directory: %s\n", path);
 
     while (true) {
         int err = lfs_dir_read(&lfs, dir, &info);
@@ -218,6 +245,7 @@ int lfs_fuse_open(const char *path, struct fuse_file_info *fi) {
     memset(file, 0, sizeof(lfs_file_t));
 
     int flags = 0;
+//#ifndef _MSC_VER
     if ((fi->flags & 3) == O_RDONLY) flags |= LFS_O_RDONLY;
     if ((fi->flags & 3) == O_WRONLY) flags |= LFS_O_WRONLY;
     if ((fi->flags & 3) == O_RDWR)   flags |= LFS_O_RDWR;
@@ -225,7 +253,8 @@ int lfs_fuse_open(const char *path, struct fuse_file_info *fi) {
     if (fi->flags & O_EXCL)          flags |= LFS_O_EXCL;
     if (fi->flags & O_TRUNC)         flags |= LFS_O_TRUNC;
     if (fi->flags & O_APPEND)        flags |= LFS_O_APPEND;
-
+//#endif /* _MSC_VER */
+    printf("Open file: %s\n", path);
     int err = lfs_file_open(&lfs, file, path, flags);
     if (err) {
         free(file);
@@ -247,7 +276,7 @@ int lfs_fuse_release(const char *path, struct fuse_file_info *fi) {
 int lfs_fuse_fgetattr(const char *path, struct stat *s,
         struct fuse_file_info *fi) {
     lfs_file_t *file = (lfs_file_t*)fi->fh;
-
+    printf("ATTR: %s\n", path);
     lfs_fuse_tostat(s, &(struct lfs_info){
         .size = lfs_file_size(&lfs, file),
         .type = LFS_TYPE_REG,
@@ -257,7 +286,7 @@ int lfs_fuse_fgetattr(const char *path, struct stat *s,
 }
 
 int lfs_fuse_read(const char *path, char *buf, size_t size,
-        off_t off, struct fuse_file_info *fi) {
+    fuse_off_t off, struct fuse_file_info *fi) {
     lfs_file_t *file = (lfs_file_t*)fi->fh;
 
     if (lfs_file_tell(&lfs, file) != off) {
@@ -271,7 +300,7 @@ int lfs_fuse_read(const char *path, char *buf, size_t size,
 }
 
 int lfs_fuse_write(const char *path, const char *buf, size_t size,
-        off_t off, struct fuse_file_info *fi) {
+    fuse_off_t off, struct fuse_file_info *fi) {
     lfs_file_t *file = (lfs_file_t*)fi->fh;
 
     if (lfs_file_tell(&lfs, file) != off) {
@@ -295,8 +324,9 @@ int lfs_fuse_flush(const char *path, struct fuse_file_info *fi) {
     return lfs_file_sync(&lfs, file);
 }
 
-int lfs_fuse_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
+int lfs_fuse_create(const char *path, fuse_mode_t mode, struct fuse_file_info *fi) {
     int err = lfs_fuse_open(path, fi);
+    printf("Create: %s\n", path);
     if (err) {
         return err;
     }
@@ -304,13 +334,13 @@ int lfs_fuse_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
     return lfs_fuse_fsync(path, 0, fi);
 }
 
-int lfs_fuse_ftruncate(const char *path, off_t size,
+int lfs_fuse_ftruncate(const char *path, fuse_off_t size,
         struct fuse_file_info *fi) {
     lfs_file_t *file = (lfs_file_t*)fi->fh;
     return lfs_file_truncate(&lfs, file, size);
 }
 
-int lfs_fuse_truncate(const char *path, off_t size) {
+int lfs_fuse_truncate(const char *path, fuse_off_t size) {
     lfs_file_t file;
     int err = lfs_file_open(&lfs, &file, path, LFS_O_WRONLY);
     if (err) {
@@ -327,21 +357,25 @@ int lfs_fuse_truncate(const char *path, off_t size) {
 
 // unsupported functions
 int lfs_fuse_link(const char *from, const char *to) {
+    printf("%s: %s\n", __func__, from);
     // not supported, fail
     return -EPERM;
 }
 
-int lfs_fuse_mknod(const char *path, mode_t mode, dev_t dev) {
+int lfs_fuse_mknod(const char *path, fuse_mode_t mode, fuse_dev_t dev) {
+    printf("%s: %s\n", __func__, path);
     // not supported, fail
     return -EPERM;
 }
 
-int lfs_fuse_chmod(const char *path, mode_t mode) {
+int lfs_fuse_chmod(const char *path, fuse_mode_t mode) {
+    printf("%s: %s\n", __func__, path);
     // not supported, always succeed
     return 0;
 }
 
-int lfs_fuse_chown(const char *path, uid_t uid, gid_t gid) {
+int lfs_fuse_chown(const char *path, fuse_uid_t uid, fuse_gid_t gid) {
+    printf("%s: %s\n", __func__, path);
     // not supported, fail
     return -EPERM;
 }
@@ -447,7 +481,7 @@ int lfs_fuse_opt_proc(void *data, const char *arg,
     switch (key) {
         case FUSE_OPT_KEY_NONOPT:
             if (!device) {
-                device = strdup(arg);
+                device = _strdup(arg);
                 return 0;
             }
             break;

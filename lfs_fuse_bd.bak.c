@@ -15,10 +15,6 @@
 
 #ifdef _MSC_VER
 #include <Windows.h>
-#include <fcntl.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <io.h>
 
 typedef long long ssize_t;
 #endif /* _MSC_VER */
@@ -37,11 +33,10 @@ static OFSTRUCT buffer;
 
 // Block device wrapper for user-space block devices
 int lfs_fuse_bd_create(struct lfs_config *cfg, const char *path) {
-    puts(__func__);
     printf("Try to open: %s\n", path);
-    HANDLE fd = CreateFileA(path, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_DIRECTORY, NULL);
+    HFILE fd = OpenFile(path, &buffer, OF_READWRITE);
 
-    if (fd == INVALID_HANDLE_VALUE) {
+    if (fd == HFILE_ERROR) {
         puts("Cannot open file\n");
         return -errno;
     }
@@ -51,11 +46,6 @@ int lfs_fuse_bd_create(struct lfs_config *cfg, const char *path) {
     // get sector size
     if (!cfg->block_size) {
         long ssize = 512;
-        //ioctl();
-        DWORD _test_size = 0;
-
-        GetFileSize(fd, &_test_size);
-        printf("Size: %lu\n", _test_size);
         //int err = ioctl(fd, BLKSSZGET, &ssize);
         int err = 0;
         if (err) {
@@ -66,7 +56,7 @@ int lfs_fuse_bd_create(struct lfs_config *cfg, const char *path) {
 
     // get size in sectors
     if (!cfg->block_count) {
-        long size = 64;
+        long size = 512;
         //int err = ioctl(fd, BLKGETSIZE, &size);
         int err = 0;
         if (err) {
@@ -85,34 +75,28 @@ int lfs_fuse_bd_create(struct lfs_config *cfg, const char *path) {
 }
 
 void lfs_fuse_bd_destroy(const struct lfs_config *cfg) {
-    puts(__func__);
-    //HFILE fd = (HFILE)cfg->context;
-    HANDLE fd = (HANDLE)cfg->context;
+    HFILE fd = (HFILE)cfg->context;
     CloseHandle(fd);
-    //int fd = (int)cfg->context;
-    //_close(fd);
 }
 
 int lfs_fuse_bd_read(const struct lfs_config *cfg, lfs_block_t block,
         lfs_off_t off, void *buffer, lfs_size_t size) {
-    puts(__func__);
-    HANDLE fd = (HANDLE)cfg->context;
+    HFILE fd = (HFILE)cfg->context;
 
     // check if read is valid
     assert(block < cfg->block_count);
 
     // go to block
-    lfs_off_t err = SetFilePointer(fd, (lfs_off_t)block * cfg->block_size + (lfs_off_t)off, NULL, SEEK_SET);
+    lfs_off_t err = _llseek(fd, (lfs_off_t)block*cfg->block_size + (lfs_off_t)off, SEEK_SET);
     if (err < 0) {
-        puts("SEEK ERROR");
         return -errno;
     }
 
     // read block
+    //ssize_t res = read(fd, buffer, (size_t)size);
     ssize_t read_bytes = 0;
 
     if (!ReadFile(fd, buffer, size, &read_bytes, NULL) || read_bytes < 0) {
-        puts("ERROR READ");
         return -errno;
     }
 
@@ -121,23 +105,22 @@ int lfs_fuse_bd_read(const struct lfs_config *cfg, lfs_block_t block,
 
 int lfs_fuse_bd_prog(const struct lfs_config *cfg, lfs_block_t block,
         lfs_off_t off, const void *buffer, lfs_size_t size) {
-    puts(__func__);
-    HANDLE fd = (HANDLE)cfg->context;
+    HFILE fd = (HFILE)cfg->context;
 
     // check if write is valid
     assert(block < cfg->block_count);
 
     // go to block
-    lfs_off_t err = SetFilePointer(fd, (lfs_off_t)block * cfg->block_size + (lfs_off_t)off, NULL, SEEK_SET);
+    lfs_off_t err = _llseek(fd, (lfs_off_t)block * cfg->block_size + (lfs_off_t)off, SEEK_SET);
     if (err < 0) {
         return -errno;
     }
 
     // write block
+    //ssize_t res = write(fd, buffer, (size_t)size);
     DWORD write_bytes = 0;
 
     if (!WriteFile(fd, buffer, size, &write_bytes, NULL)) {
-        puts("ERROR WRITE");
         return -errno;
     }
 
@@ -150,13 +133,10 @@ int lfs_fuse_bd_erase(const struct lfs_config *cfg, lfs_block_t block) {
 }
 
 int lfs_fuse_bd_sync(const struct lfs_config *cfg) {
-    puts(__func__);
-    HANDLE fd = (HANDLE)cfg->context;
-
+    HFILE fd = (HFILE)cfg->context;
 
     //int err = fsync(fd);
     if (!FlushFileBuffers(fd)) {
-        puts("ERROR FLUSH");
         return -errno;
     }
 
